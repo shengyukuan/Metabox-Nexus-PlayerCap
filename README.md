@@ -380,3 +380,15 @@ VTB-TOOLS Metabox Nexus-PlayerCap 多播放器歌词实时推送服务
 ## License
 
 MIT
+
+## 项目来源与致谢
+
+本项目源代码基于 [VTB-LINK/Metabox-Nexus-PlayerCap](https://github.com/VTB-LINK/Metabox-Nexus-PlayerCap) 项目，感谢原作者的开发与分享。
+
+当前仓库用于个人学习、部署与二次整理。相关版权、许可证及原项目说明请以源项目仓库为准。
+
+## 教学视频
+
+项目使用与配置教程：
+
+[Bilibili：Metabox-Nexus-PlayerCap 使用教程](https://www.bilibili.com/video/BV1P5gs6TEYS?spm_id_from=333.788.videopod.sections&vd_source=629b3835bca5d425fdb0f1f76ffef0e1)
