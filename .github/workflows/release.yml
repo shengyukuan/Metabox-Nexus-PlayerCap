@@ -136,11 +136,6 @@ jobs:
             exit 1
           fi
 
-          TRAY_EXE_NAME="${OUTPUT_NAME}-Tray.exe"
-          go build -o "${TRAY_EXE_NAME}" ./cmd/metabox-playercap-tray
-          echo "TRAY_EXE_NAME=${TRAY_EXE_NAME}" >> $GITHUB_ENV
-          test -f "${TRAY_EXE_NAME}"
-
       - name: Prepare files for packaging
         run: |
           VERSION=${{ steps.vars.outputs.VERSION }}
@@ -149,10 +144,9 @@ jobs:
           mkdir -p "${PACKAGE_DIR}"
 
           cp "${EXE_NAME}" "${PACKAGE_DIR}/"
-          cp "${TRAY_EXE_NAME}" "${PACKAGE_DIR}/"
-          cp install-tray.ps1 "${PACKAGE_DIR}/"
-          # 用内置默认生成 clean config.yml（不受开发者本地 config.yml 影响）；CI 在 linux 跑需原生 GOOS
-          GOOS= GOARCH= go run ./tools/genconfig "${PACKAGE_DIR}/config.yml"
+          # 用内置默认生成 clean config.yml（不受开发者本地 config.yml 影响）；CI 在 linux 跑需原生 GOOS。
+          # -version 定随包 config.yml 的版本键 config-version（发版得到 "v<VERSION>"）
+          GOOS= GOARCH= go run ./tools/genconfig -version "${VERSION}" "${PACKAGE_DIR}/config.yml"
           cp "${HTML_FILE_NAME}" "${PACKAGE_DIR}/"
           cp lyric_page.html "${PACKAGE_DIR}/"
           cp effect_display.html "${PACKAGE_DIR}/"
@@ -192,7 +186,6 @@ jobs:
           files: |
             ${{ env.OUTPUT_NAME }}-V${{ steps.vars.outputs.VERSION }}.zip
             ${{ env.OUTPUT_NAME }}.exe
-            ${{ env.OUTPUT_NAME }}-Tray.exe
             # ${{ env.OUTPUT_NAME }}-V${{ steps.vars.outputs.VERSION }}.exe
 
       - name: Create Release Draft (dotcom mirror)
@@ -207,7 +200,7 @@ jobs:
 
           # 生成 github.com 发布用压缩包（仅 exe + html）
           rm -f "${DOTCOM_ARCHIVE_NAME}"
-          zip -j "${DOTCOM_ARCHIVE_NAME}" "${EXE_NAME}" "${TRAY_EXE_NAME}" install-tray.ps1 "${HTML_FILE_NAME}" lyric_page.html effect_display.html effect_page.html
+          zip -j "${DOTCOM_ARCHIVE_NAME}" "${EXE_NAME}" "${HTML_FILE_NAME}" lyric_page.html effect_display.html effect_page.html
 
           # 生成自动 release notes
           gh api "repos/${DOTCOM_REPO}/releases/generate-notes" \
@@ -252,7 +245,7 @@ jobs:
           } > combined-release-notes.md
 
           # 创建 Release Draft 并上传 zip + 独立文件（含特效页 effect_display.html / effect_page.html）
-          gh release create "${TAG_NAME}" "${DOTCOM_ARCHIVE_NAME}" "${EXE_NAME}" "${TRAY_EXE_NAME}" install-tray.ps1 "${HTML_FILE_NAME}" lyric_page.html effect_display.html effect_page.html \
+          gh release create "${TAG_NAME}" "${DOTCOM_ARCHIVE_NAME}" "${EXE_NAME}" "${HTML_FILE_NAME}" lyric_page.html effect_display.html effect_page.html \
             --repo "${DOTCOM_REPO}" \
             --title "${TAG_NAME}" \
             --draft \

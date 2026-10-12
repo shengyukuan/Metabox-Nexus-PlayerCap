@@ -71,5 +71,3 @@ data/
 *.cache
 /node_modules
 /testtool
-.gocache-build/
-.codex-*/
