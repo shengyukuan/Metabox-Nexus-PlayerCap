@@ -1,0 +1,92 @@
+package cloudmusic
+
+// 本文件只测歌曲身份判定：buildSongIdentityKey 生成换歌检测用的键，
+// snapshotMatchesCurrentSong 判断 Redux 快照是否已对齐到当前歌。判错会导致换歌漏检，
+// 或拿上一首的 Redux 数据当这一首用。
+
+import (
+	"testing"
+
+	"Metabox-Nexus-PlayerCap/player/cloudmusic/cdp"
+)
+
+func TestSnapshotMatchesCurrentSong(t *testing.T) {
+	tests := []struct {
+		name       string
+		snapshot   *cdp.ExtractionData
+		songName   string
+		songArtist string
+		want       bool
+	}{
+		{
+			name:       "exact match",
+			snapshot:   newSnapshot("Blue Bird", "Ikimono Gakari"),
+			songName:   "Blue Bird",
+			songArtist: "Ikimono Gakari",
+			want:       true,
+		},
+		{
+			name:       "normalize whitespace and case",
+			snapshot:   newSnapshot("  Blue   Bird  ", "IKIMONO   GAKARI"),
+			songName:   "blue bird",
+			songArtist: "ikimono gakari",
+			want:       true,
+		},
+		{
+			name:       "stale redux snapshot is rejected",
+			snapshot:   newSnapshot("Old Song", "Old Artist"),
+			songName:   "New Song",
+			songArtist: "New Artist",
+			want:       false,
+		},
+		{
+			name:       "same song different artist is rejected",
+			snapshot:   newSnapshot("Same Name", "Artist A"),
+			songName:   "Same Name",
+			songArtist: "Artist B",
+			want:       false,
+		},
+		{
+			name:       "nil snapshot",
+			snapshot:   nil,
+			songName:   "Blue Bird",
+			songArtist: "Ikimono Gakari",
+			want:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := snapshotMatchesCurrentSong(tt.snapshot, tt.songName, tt.songArtist); got != tt.want {
+				t.Fatalf("snapshotMatchesCurrentSong() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildSongIdentityKeyIncludesArtist(t *testing.T) {
+	first := buildSongIdentityKey("泪桥", "Dawn9")
+	second := buildSongIdentityKey("泪桥", "伍佰 & China Blue")
+	if first == second {
+		t.Fatalf("same title with different artists produced same identity key")
+	}
+
+	if got := buildSongIdentityKey("  Blue   Bird ", "IKIMONO   GAKARI"); got != buildSongIdentityKey("blue bird", "ikimono gakari") {
+		t.Fatalf("identity key was not normalized: %q", got)
+	}
+
+	if got := buildSongIdentityKey("", "Artist"); got != "" {
+		t.Fatalf("empty song name key = %q, want empty", got)
+	}
+}
+
+func newSnapshot(songName, artist string) *cdp.ExtractionData {
+	data := &cdp.ExtractionData{CurPlaying: &cdp.CurPlayingObj{}}
+	data.CurPlaying.Track.Name = songName
+	if artist != "" {
+		data.CurPlaying.Track.Artists = []struct {
+			Name string `json:"name"`
+		}{{Name: artist}}
+	}
+	return data
+}
