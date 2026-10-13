@@ -5,6 +5,7 @@ import (
 	"Metabox-Nexus-PlayerCap/audiocap/manager"
 	"Metabox-Nexus-PlayerCap/clientid"
 	"Metabox-Nexus-PlayerCap/config"
+	"Metabox-Nexus-PlayerCap/control"
 	"Metabox-Nexus-PlayerCap/i18n"
 	"Metabox-Nexus-PlayerCap/logger"
 	"Metabox-Nexus-PlayerCap/player/applemusic"
@@ -272,12 +273,41 @@ func main() {
 	// 绝不 re-panic 杀主进程（Guard 会 re-panic=直播事故）。这是对主服务侧 Guard 范式的有意豁免。
 	go func() { defer localRecover("audio-manager"); audioMgr.Run() }()
 
+	// The tray controller uses a private named pipe for process control. Keep
+	// this off HTTP because the service may listen on 0.0.0.0.
+	shutdownRequested := make(chan struct{}, 1)
+	requestShutdown := func() {
+		select {
+		case shutdownRequested <- struct{}{}:
+		default:
+		}
+	}
+	go func() {
+		defer telemetry.Guard()
+		if err := control.RunServer(func(command string) string {
+			switch command {
+			case "status":
+				return "running"
+			case "stop":
+				requestShutdown()
+				return "stopping"
+			default:
+				return "unknown-command"
+			}
+		}); err != nil {
+			mainLog.Warn("tray control pipe stopped: %v", err)
+		}
+	}()
+
 	// 优雅退出：收到中断信号时，还原网易云被双击隐藏的菜单后再退出
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		defer telemetry.Guard()
-		<-sigCh
+		select {
+		case <-sigCh:
+		case <-shutdownRequested:
+		}
 		mainLog.Info("Received shutdown signal, restoring NetEase Cloud Music window and menu...")
 		park.Unpark() // 若处于屏外泊车，先飞回原位
 		effectCapturer.RestoreChrome()
