@@ -307,4 +307,5 @@ var p4LogMessages = map[string]string{
 	"%d play-time candidates; using 0x%08X [%s]":                                                                                                              "播放时间候选 %d 处，选用 0x%08X [%s]",
 	"Play-time address 0x%08X is stalled while another one advances; switching to 0x%08X":                                                                     "播放时间地址 0x%08X 停着而另一处在走，改用 0x%08X",
 	"Romanization attached: %d/%d lines":                                                                                                                      "音译已配上: %d/%d 行",
+	"tray control pipe stopped: %v":                                                                                                                           "托盘控制管道已停止：%v",
 }

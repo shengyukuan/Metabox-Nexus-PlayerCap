@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -52,6 +53,7 @@ const (
 	nimAdd          = 0x0000
 	nimModify       = 0x0001
 	nimDelete       = 0x0002
+	nifGuid         = 0x0020
 	idiApplication  = 32512
 	idcArrow        = 32512
 	mbOK            = 0x0000
@@ -79,6 +81,7 @@ var (
 	procCursorPos     = user32.NewProc("GetCursorPos")
 	procSetForeground = user32.NewProc("SetForegroundWindow")
 	procPostMessage   = user32.NewProc("PostMessageW")
+	procRegisterMsg   = user32.NewProc("RegisterWindowMessageW")
 	procLoadIcon      = user32.NewProc("LoadIconW")
 	procLoadCursor    = user32.NewProc("LoadCursorW")
 	procModuleHandle  = kernel32.NewProc("GetModuleHandleW")
@@ -92,6 +95,10 @@ var (
 	// Callback trampolines are package globals by design.
 	windowCallback = windows.NewCallback(windowProc)
 	active         *controller
+	taskbarCreated uint32
+	// A stable identity lets a new tray process remove an icon left behind
+	// when the previous process was terminated by Task Manager.
+	trayIdentity = [16]byte{0x4d, 0x4e, 0x50, 0x43, 0x01, 0x00, 0x01, 0x00, 0x8a, 0x39, 0x4e, 0x70, 0xa1, 0x5c, 0x29, 0x61}
 )
 
 type point struct{ x, y int32 }
@@ -141,6 +148,7 @@ type notifyIconData struct {
 }
 
 type nativeTray struct {
+	mu         sync.Mutex
 	hwnd       windows.Handle
 	icon       notifyIconData
 	iconHandle windows.Handle
@@ -157,6 +165,14 @@ type controller struct {
 }
 
 func Run(corePath string, install bool) error {
+	// A Win32 window and its message queue belong to the OS thread that
+	// created them. Keep that thread fixed through window creation, dispatch,
+	// and destruction; otherwise the Go scheduler can move this goroutine to a
+	// different thread after a blocking service-control call, leaving tray
+	// notifications queued on a thread whose message loop is no longer running.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
 	if install {
 		self, err := os.Executable()
 		if err != nil {
@@ -176,6 +192,7 @@ func Run(corePath string, install bool) error {
 	defer windows.CloseHandle(mutex)
 
 	procFreeConsole.Call()
+	taskbarCreated = registerTaskbarCreated()
 	c := &controller{corePath: filepath.Clean(corePath)}
 	active = c
 	var trayErr error
@@ -185,9 +202,16 @@ func Run(corePath string, install bool) error {
 	}
 	defer c.native.close()
 
-	if _, err := control.Send("status"); err != nil {
-		c.start()
-	}
+	// Do not block the tray window thread while the core service is starting.
+	// When both processes are stopped, control.Send may retry for several
+	// seconds before c.start can launch the core. The tray icon is already
+	// visible by this point, so the message loop must begin immediately or
+	// clicks appear to be ignored during that startup window.
+	c.async(func() {
+		if _, err := control.Send("status"); err != nil {
+			c.start()
+		}
+	})
 	go c.refreshLoop()
 	return c.messageLoop()
 }
@@ -500,32 +524,55 @@ func newNativeTray(corePath string) (*nativeTray, error) {
 		cbSize:          uint32(unsafe.Sizeof(notifyIconData{})),
 		hWnd:            t.hwnd,
 		uID:             1,
-		uFlags:          nifMessage | nifIcon | nifTip,
+		uFlags:          nifMessage | nifIcon | nifTip | nifGuid,
 		callbackMessage: trayMsg,
 		hIcon:           icon,
+		guid:            trayIdentity,
 	}
 	copy(t.icon.tip[:], windows.StringToUTF16("Metabox PlayerCap"))
-	if r, _, err := procNotify.Call(nimAdd, uintptr(unsafe.Pointer(&t.icon))); r == 0 {
+	if !t.add() {
 		procDestroyWindow.Call(hwnd)
 		if t.ownsIcon && t.iconHandle != 0 {
 			procDestroyIcon.Call(uintptr(t.iconHandle))
 		}
-		if err == nil {
-			err = fmt.Errorf("add tray icon failed")
-		}
-		return nil, err
+		return nil, fmt.Errorf("add tray icon failed")
 	}
 	return t, nil
 }
 
+// add registers the icon with the current Explorer taskbar. Explorer removes
+// all notification icons when it restarts, while the tray process and its
+// hidden window keep running. TaskbarCreated is broadcast after the new shell
+// is ready, so the same icon data can be registered again safely.
+func (t *nativeTray) add() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// Remove a previous registration with this stable identity first. This is
+	// important after Task Manager termination, where the old process cannot
+	// run NIM_DELETE and Explorer may retain a dead icon entry.
+	t.icon.uFlags = nifGuid
+	procNotify.Call(nimDelete, uintptr(unsafe.Pointer(&t.icon)))
+	t.icon.uFlags = nifMessage | nifIcon | nifTip | nifGuid
+	r, _, _ := procNotify.Call(nimAdd, uintptr(unsafe.Pointer(&t.icon)))
+	return r != 0
+}
+
 func (t *nativeTray) setTip(value string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
 	copy(t.icon.tip[:], windows.StringToUTF16(value))
-	t.icon.uFlags = nifTip
+	t.icon.uFlags = nifGuid | nifTip
 	procNotify.Call(nimModify, uintptr(unsafe.Pointer(&t.icon)))
-	t.icon.uFlags = nifMessage | nifIcon | nifTip
+	t.icon.uFlags = nifMessage | nifIcon | nifTip | nifGuid
 }
 
 func (t *nativeTray) close() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.icon.uFlags = nifGuid
 	procNotify.Call(nimDelete, uintptr(unsafe.Pointer(&t.icon)))
 	procDestroyWindow.Call(uintptr(t.hwnd))
 	if t.ownsIcon && t.iconHandle != 0 {
@@ -549,6 +596,13 @@ func (c *controller) messageLoop() error {
 }
 
 func windowProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
+	if taskbarCreated != 0 && msg == taskbarCreated {
+		if active != nil && active.native != nil {
+			active.native.add()
+		}
+		return 0
+	}
+
 	switch msg {
 	case trayMsg:
 		if active != nil {
@@ -570,6 +624,12 @@ func windowProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		return r
 	}
 	return 0
+}
+
+func registerTaskbarCreated() uint32 {
+	name := windows.StringToUTF16Ptr("TaskbarCreated")
+	r, _, _ := procRegisterMsg.Call(uintptr(unsafe.Pointer(name)))
+	return uint32(r)
 }
 
 func addMenu(menu, id uintptr, text string) {
