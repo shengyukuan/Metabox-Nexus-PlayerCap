@@ -3716,6 +3716,7 @@
                         </div>
                         <div class="editor-bottom-bar">
                             <button id="btnCopyUrl" class="editor-btn">📋 复制默认</button>
+                            <button id="btnResetDefaults" class="editor-btn" title="清除本机缓存并恢复默认设置">↺ 恢复默认</button>
                             <code id="urlDisplay">?default</code>
                             <label id="copyBgTransparentLabel">
                                 <input type="checkbox" id="cfgCopyBgTransparent" checked style="width:12px;height:12px;">
@@ -3734,6 +3735,63 @@
             const frame = document.getElementById('previewFrame');
             const urlDisplay = document.getElementById('urlDisplay');
             let lastPreviewQs = frame.getAttribute('src') || '?default';
+
+            // 编辑器设置只保存在当前浏览器，不参与 OBS 展示页的 URL 解析。
+            // 展示页仍然完全由复制出来的 URL 决定，避免不同 OBS 场景互相影响。
+            const EDITOR_SETTINGS_KEY = 'metabox-nexus-playercap.editor-settings.v1';
+            const editorSettingControls = [...document.querySelectorAll('input[id], select[id], textarea[id]')];
+            const editorDefaults = editorSettingControls.map(el => ({
+                id: el.id,
+                type: el.type,
+                value: el.type === 'checkbox' ? el.checked : el.value
+            }));
+
+            function readEditorSettings() {
+                try {
+                    const raw = localStorage.getItem(EDITOR_SETTINGS_KEY);
+                    if (!raw) return null;
+                    const state = JSON.parse(raw);
+                    return state && typeof state === 'object' && state.values && typeof state.values === 'object'
+                        ? state : null;
+                } catch (e) {
+                    return null;
+                }
+            }
+
+            function saveEditorSettings() {
+                try {
+                    const values = {};
+                    editorSettingControls.forEach(el => {
+                        values[el.id] = el.type === 'checkbox' ? el.checked : el.value;
+                    });
+                    const active = document.querySelector('.editor-mode-btn.active');
+                    localStorage.setItem(EDITOR_SETTINGS_KEY, JSON.stringify({
+                        version: 1,
+                        values,
+                        activeMode: active ? active.dataset.mode : 'default',
+                        selectedFont: window._selectedFont || ''
+                    }));
+                } catch (e) {
+                    // localStorage 可能被浏览器隐私模式或 file:// 策略禁用；缓存失败不应影响编辑器。
+                }
+            }
+
+            function applyEditorSettings(values) {
+                editorSettingControls.forEach(el => {
+                    if (!Object.prototype.hasOwnProperty.call(values, el.id)) return;
+                    if (el.type === 'checkbox') {
+                        el.checked = values[el.id] === true || values[el.id] === 'true';
+                    } else {
+                        el.value = String(values[el.id]);
+                    }
+                });
+            }
+
+            const savedEditorSettings = readEditorSettings();
+            if (savedEditorSettings) {
+                applyEditorSettings(savedEditorSettings.values);
+                if (savedEditorSettings.selectedFont) window._selectedFont = savedEditorSettings.selectedFont;
+            }
 
             // 获取当前活跃模式
             function getActiveMode() {
@@ -3767,6 +3825,7 @@
                     document.querySelectorAll('.editor-mode-btn').forEach(b => b.classList.remove('active'));
                     btn.classList.add('active');
                     switchMode(btn.dataset.mode);
+                    saveEditorSettings();
                 });
             });
 
@@ -4116,6 +4175,58 @@
                 document.getElementById('rowPureShrinkMin').style.display = pureOv === 'shrink' ? 'flex' : 'none';
             }
 
+            function updateEditorRangeLabels() {
+                const labels = [
+                    ['cfgFontScale', 'fontScaleVal', '×'],
+                    ['cfgPureScrollSpeed', 'pureScrollSpeedVal', ' px/s'],
+                    ['cfgPurePpTime', 'purePpTimeVal', 's'],
+                    ['cfgPurePpPause', 'purePpPauseVal', 's'],
+                    ['cfgPureShrinkMin', 'pureShrinkMinVal', '×'],
+                    ['cfgStFontScale', 'stFontScaleVal', '×'],
+                    ['cfgStScrollSpeed', 'stScrollSpeedVal', ' px/s'],
+                    ['cfgStPpTime', 'stPpTimeVal', 's'],
+                    ['cfgStPpPause', 'stPpPauseVal', 's'],
+                    ['cfgStShrinkMin', 'stShrinkMinVal', '×'],
+                    ['cfgSubGap', 'subGapVal', '×'],
+                    ['cfgSubFontScale', 'subFontScaleVal', '×'],
+                    ['cfgSpinSpeed', 'spinSpeedVal', 's'],
+                    ['cfgCoverSize', 'coverSizeVal', 'px']
+                ];
+                labels.forEach(([inputId, labelId, suffix]) => {
+                    const input = document.getElementById(inputId);
+                    const label = document.getElementById(labelId);
+                    if (input && label) label.textContent = input.value + suffix;
+                });
+            }
+
+            function restoreEditorDefaults() {
+                if (!window.confirm('恢复所有编辑器设置为默认值？')) return;
+                editorDefaults.forEach(item => {
+                    const el = document.getElementById(item.id);
+                    if (!el) return;
+                    if (item.type === 'checkbox') el.checked = item.value;
+                    else el.value = item.value;
+                });
+                window._selectedFont = undefined;
+                try { localStorage.removeItem(EDITOR_SETTINGS_KEY); } catch (e) {}
+
+                document.querySelectorAll('.editor-mode-btn').forEach(btn => {
+                    btn.classList.toggle('active', btn.dataset.mode === 'default');
+                });
+                document.querySelectorAll('.grid-align').forEach(grid => {
+                    const target = document.getElementById(grid.dataset.target);
+                    if (!target) return;
+                    grid.querySelectorAll('.grid-align-cell').forEach(cell => {
+                        cell.classList.toggle('active', cell.dataset.val === target.value);
+                    });
+                });
+                syncFontSourceUI();
+                updateEditorRangeLabels();
+                toggleSubRows();
+                lastPreviewQs = '';
+                switchMode('default');
+            }
+
             // 绑定所有控件事件
             const controls = ['cfgOneLine', 'cfgSubText', 'cfgSubPos', 'cfgSubOverflow',
                 'cfgSubGap', 'cfgSubFontScale', 'cfgSubColorMode', 'cfgSubColor', 'cfgSubGlow', 'cfgSubGlowColor',
@@ -4137,6 +4248,12 @@
                 const el = document.getElementById(id);
                 el.addEventListener('change', () => { toggleSubRows(); refreshPreview(); });
                 el.addEventListener('input', () => { toggleSubRows(); refreshPreview(); });
+            });
+
+            // 所有编辑器控件都参与缓存，包括颜色、字体搜索框和特效专属参数。
+            editorSettingControls.forEach(el => {
+                el.addEventListener('change', saveEditorSettings);
+                el.addEventListener('input', saveEditorSettings);
             });
 
             // 滑块值显示
@@ -4276,18 +4393,21 @@
                     const pair = colorPairs.find(p => p.color === target);
                     if (pair) document.getElementById(pair.hex).value = defaultVal;
                     refreshPreview();
+                    saveEditorSettings();
                 });
             });
 
             // === 字体选择器 ===
             let _fontSelectorInited = false;
             // 检查 API 可用性，显示字体来源行（但不立即请求权限）
-            if ('queryLocalFonts' in window) {
-                document.getElementById('rowFontSource').style.display = 'flex';
-                document.getElementById('fontLocalArea').style.display = 'block';
-            } else {
-                document.getElementById('fontManualArea').style.display = 'block';
+            function syncFontSourceUI() {
+                const localAvailable = 'queryLocalFonts' in window;
+                const source = document.getElementById('cfgFontSource').value;
+                document.getElementById('rowFontSource').style.display = localAvailable ? 'flex' : 'none';
+                document.getElementById('fontLocalArea').style.display = localAvailable && source === 'local' ? 'block' : 'none';
+                document.getElementById('fontManualArea').style.display = !localAvailable || source === 'manual' ? 'block' : 'none';
             }
+            syncFontSourceUI();
 
             async function initFontSelector() {
                 if (_fontSelectorInited) return;
@@ -4397,6 +4517,7 @@
                 document.getElementById('fontSearch').value = displayName;
                 document.getElementById('fontList').classList.remove('open');
                 refreshPreview();
+                saveEditorSettings();
             }
 
             function list_querySelector(name) {
@@ -4411,8 +4532,7 @@
             document.getElementById('cfgFontSource').addEventListener('change', () => {
                 const src = document.getElementById('cfgFontSource').value;
                 if (src === 'local') initFontSelector(); // 用户手势触发权限请求
-                document.getElementById('fontLocalArea').style.display = src === 'local' ? 'block' : 'none';
-                document.getElementById('fontManualArea').style.display = src === 'manual' ? 'block' : 'none';
+                syncFontSourceUI();
                 refreshPreview();
             });
 
@@ -4484,6 +4604,7 @@
                 list.querySelectorAll('.font-item').forEach(el => el.classList.toggle('selected', el.dataset.font === name));
                 list.classList.remove('open');
                 refreshPreview();
+                saveEditorSettings();
             }
             const _subFontSearchEl = document.getElementById('subFontSearch');
             if (_subFontSearchEl) {
@@ -4592,8 +4713,17 @@
                 });
             });
 
-            // 初始化：按默认模式显示分组
-            switchMode('default');
+            document.getElementById('btnResetDefaults').addEventListener('click', restoreEditorDefaults);
+
+            // 初始化：恢复上次模式；没有缓存时使用默认模式。
+            const savedMode = savedEditorSettings && savedEditorSettings.activeMode;
+            const initialMode = ['default', 'pure', 'title', 'cover', 'effect'].includes(savedMode)
+                ? savedMode : 'default';
+            const initialModeButton = document.querySelector(`.editor-mode-btn[data-mode="${initialMode}"]`);
+            document.querySelectorAll('.editor-mode-btn').forEach(btn => btn.classList.remove('active'));
+            if (initialModeButton) initialModeButton.classList.add('active');
+            updateEditorRangeLabels();
+            switchMode(initialMode);
         }
 
         function buildPreviewURL() {
